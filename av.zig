@@ -24,6 +24,8 @@ pub extern fn av_find_best_stream(
 pub extern fn av_read_frame(s: *FormatContext, pkt: *Packet) c_int;
 /// Prefer `FormatContext.seek_frame`.
 pub extern fn av_seek_frame(s: *FormatContext, stream_index: c_int, timestamp: i64, flags: c_int) c_int;
+
+pub extern fn avformat_seek_file(s: *FormatContext, stream_index: c_int, min_ts: i64, ts: i64, max_ts: i64, flags: c_int) c_int;
 /// Prefer `FormatContext.flush`.
 pub extern fn avformat_flush(s: *FormatContext) c_int;
 /// Prefer `FormatContext.dump`
@@ -133,6 +135,8 @@ pub extern fn av_packet_ref(dst: *Packet, src: *const Packet) c_int;
 /// Prefer `Packet.unref`.
 pub extern fn av_packet_unref(pkt: *Packet) void;
 
+pub extern fn av_packet_move_ref(dst: *Packet, src: *Packet) void;
+
 /// Prefer `Frame.alloc`.
 pub extern fn av_frame_alloc() ?*Frame;
 /// Prefer `Frame.free`.
@@ -141,6 +145,8 @@ pub extern fn av_frame_free(frame: *?*Frame) void;
 pub extern fn av_frame_ref(dst: *Frame, src: *const Frame) c_int;
 /// Prefer `Frame.unref`.
 pub extern fn av_frame_unref(frame: *Frame) void;
+
+pub extern fn av_frame_copy_props(dst: *Frame, src: *const Frame) c_int;
 
 /// Prefer `FilterGraph.alloc`.
 pub extern fn avfilter_graph_alloc() ?*FilterGraph;
@@ -980,6 +986,39 @@ pub const FormatContext = extern struct {
         _ = try wrap(av_seek_frame(s, stream_index, timestamp, flags));
     }
 
+    // Seek to timestamp ts.
+    // Seeking will be done so that the point from which all active streams
+    // can be presented successfully will be closest to ts and within min/max_ts.
+    // Active streams are all streams that have AVStream.discard < AVDISCARD_ALL.
+    //
+    // If flags contain AVSEEK_FLAG_BYTE, then all timestamps are in bytes and
+    // are the file position (this may not be supported by all demuxers).
+    // If flags contain AVSEEK_FLAG_FRAME, then all timestamps are in frames
+    // in the stream with stream_index (this may not be supported by all demuxers).
+    // Otherwise all timestamps are in units of the stream selected by stream_index
+    // or if stream_index is -1, in AV_TIME_BASE units.
+    // If flags contain AVSEEK_FLAG_ANY, then non-keyframes are treated as
+    // keyframes (this may not be supported by all demuxers).
+    // If flags contain AVSEEK_FLAG_BACKWARD, it is ignored.
+    //
+    // @note This is part of the new seek API which is still under construction.
+    pub fn seek_file(
+        /// media file handle
+        s: *FormatContext,
+        /// index of the stream which is used as time base reference
+        stream_index: c_int,
+        /// smallest acceptable timestamp
+        min_ts: i64,
+        /// target timestamp
+        ts: i64,
+        /// largest acceptable timestamp
+        max_ts: i64,
+        /// flags
+        flags: c_int,
+    ) Error!void {
+        _ = try wrap(avformat_seek_file(s, stream_index, min_ts, ts, max_ts, flags));
+    }
+
     /// Discard all internally buffered data. This can be useful when dealing with
     /// discontinuities in the byte stream. Generally works only with formats that
     /// can resync. This includes headerless formats like MPEG-TS/TS but should also
@@ -1400,6 +1439,10 @@ pub const Packet = extern struct {
 
     pub fn ref(dst: *Packet, src: *const Packet) !void {
         _ = try wrap(av_packet_ref(dst, src));
+    }
+
+    pub fn move_ref(dst: *Packet, src: *Packet) void {
+        av_packet_move_ref(dst, src);
     }
 
     /// Wipe the packet.
@@ -3095,6 +3138,13 @@ pub const Frame = extern struct {
         _ = wrap(av_frame_ref(dst, src)) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => unreachable, // I checked the source code, those are the only possible errors.
+        };
+    }
+
+    pub fn copy_props(dst: *Frame, src: *const Frame) !void {
+        _ = wrap(av_frame_copy_props(dst, src)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => unreachable, // av_frame_ref() uses this fn, (only OOM is possible, _probably_)
         };
     }
 
